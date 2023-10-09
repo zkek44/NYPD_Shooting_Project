@@ -1,0 +1,266 @@
+---
+title: "NYPD Shooting Incident Project"
+author: "Zachary Kekoa"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Introduction
+This dataset was pulled from Kaggle, but was originally from Data.gov and is provided by the NYPD every quarter.  This dataset includes shooting incident data throughout the New York City metro area from December 31st 2005 – December 31st, 2022and includes 27,312 observations.  The 14 variables that will be used in this analysis are incident key (a unique number identifying each incident), occur date (the date when the shooting occurred), boro (the name of the borough where the shooting occurred), precinct (the number of the NYPD precinct district the shooting fell into), jurisdiction code (Jurisdiction responsible for arrest.  The codes are 0(Patrol, 1(transit), and 2(housing)), statistical murder flag (whether the shooting was a murder), perp age group/sex/race (the age group, sex, and race of the perpetrator.  Similarly for the victim. As well as latitude and longitude data.
+
+
+## Import the Data
+```{r import_libraries}
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+# leaflet and leaflet.extras are not a part of the COVID 19 data libraries and 
+# may need to be installed on your computer
+library(leaflet)
+library(leaflet.extras)
+```
+
+```{r import_data}
+nypd <- read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD", na.strings = c(""))
+
+head(nypd)
+```
+## Data Cleaning
+```{r tidy_data}
+# look at the size of the dataframe
+dim(nypd)
+```
+We can see that there are 27,312 observations and 21 variables.
+
+After further inspection, it seems that there are missing values in the dataset,
+but these values are not classified as NA so I have to convert them to NA.
+
+```{r show_na}
+# let's look at the number of missing values for each column
+# I have only included the code for those which had NA values
+for (n in 1:21) {
+  if (sum(is.na(nypd[,n])) > 0) {
+    cat("Number of NA values in ", colnames(nypd[n]), ": ", sum(is.na(nypd[,n])),
+        "\n", "Percentage of missing values: ",
+        round((sum(is.na(nypd[,n])) / 27312) * 100, digits = 2), "%", "\n")
+  } else {
+    
+  }
+}
+```
+
+If more than 10% of a variable's values are NA, we will drop the entire variable
+from the data set.  In this case, we will remove LOC_OF_OCCUR_DESC,
+LOC_cASSFCTN_DESC, LOCATION_DESC, PERP_AGE_GROUP, PERP_SEX, and PERP_RACE.
+If less than 10% of a variable's values are NA, we will remove those
+individual observations.
+
+```{r remove_variables/observations}
+# remove unnecessary columns
+nypd <- nypd[, !names(nypd) %in% c('LOC_OF_OCCUR_DESC', 'LOC_CLASSFCTN_DESC', 'LOCATION_DESC',
+                        'PERP_AGE_GROUP', 'PERP_SEX', 'PERP_RACE')]
+# remove NA observations
+nypd <- na.omit(nypd)
+
+head(nypd)
+dim(nypd)
+```
+
+We can see that after removing the columns and observations that contain NA
+values, we now have 27,300 observations and 15 variables.
+
+## Time Series Analysis
+
+I will now look at the number of shootings by month and year.
+```{r line_plot}
+# suppress summarize info
+options(dplyr.summarise.inform = FALSE)
+
+# Convert occur_date to date format
+nypd <- nypd %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+
+# Create a new data frame with counts of shootings per month and year
+shooting_counts <- nypd %>%
+  group_by(year = year(OCCUR_DATE), month = month(OCCUR_DATE)) %>%
+  summarise(shooting_count = n())  # Count the number of shootings per month per year
+
+# Create a line plot for the number of shootings by month and year
+ggplot(shooting_counts, aes(x = month, y = shooting_count, group = year, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +  # Use month abbreviations on the x-axis
+  labs(title = "Number of Shootings by Month and Year",
+       x = "Month",
+       y = "Number of Shootings",
+       color = "Year") +
+  theme_minimal()
+```
+
+There appears to be a pattern where more shootings occur in the summer. Also,
+there appears to be a big spike in shootings from June - August of 2020.
+This makes sense as this coincides with the 2020 Black Lives Matter protests
+and there was a greatly increased police presense during this period. I will
+look at the same graph, but only where the victim's race was black
+
+```{r only_black}
+# suppress summarize info
+options(dplyr.summarise.inform = FALSE)
+
+# Filter the data for VIC_AGE == "BLACK"
+nypd_black_only <- nypd %>%
+  filter(VIC_RACE == "BLACK")
+
+# Create a new data frame with counts of shootings per month and year for "BLACK" victims
+shooting_counts <- nypd_black_only %>%
+  group_by(year = year(OCCUR_DATE), month = month(OCCUR_DATE)) %>%
+  summarise(shooting_count = n())  # Count the number of shootings per month per year
+
+# Create a line plot for the number of shootings by month and year for "BLACK" victims
+ggplot(shooting_counts, aes(x = month, y = shooting_count, group = year, color = factor(year))) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +  # Use month abbreviations on the x-axis
+  labs(title = "Number of Shootings of Black Victims by Month and Year",
+       x = "Month",
+       y = "Number of Shootings",
+       color = "Year") +
+  theme_minimal()
+
+```
+```{r black_victim_percentage}
+percentage <- round(length(which(nypd$VIC_RACE == "BLACK")) / nrow(nypd) * 100, digits = 2)
+cat("Percentage of shooting victims who were black: ", percentage, "%.")
+```
+Clearly the majority of shooting victims were black as is evident from the
+graph and by the percentage. I will create a heatmap of black victims to see 
+if there is a trend on the location.
+
+## Heatmap Visualization
+```{r create_heatmap}
+# Select latitude and longitude columns
+locations <- nypd_black_only %>% select(Latitude, Longitude)
+
+nyc_map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -74.006, lat = 40.7128, zoom = 10)  # Adjust the center and zoom level as needed
+
+# Add the heatmap layer
+nyc_map %>%
+  addHeatmap(data = locations, blur = 20, radius = 10)
+```
+
+Looking at a heatmap of the shootings of black victims, there seems to be a
+concentration around Brooklyn, Queens, and The Bronx. I decided to 
+create a bar chart by borough.
+
+```{r boro}
+black_shootings_by_borough <- nypd_black_only %>%
+  group_by(BORO) %>%
+  summarise(shooting_count = n()) %>%
+  arrange(desc(shooting_count))  # Sort by shooting count in descending order
+
+ggplot(black_shootings_by_borough, aes(x = reorder(BORO, -shooting_count), y = shooting_count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Number of Shootings of Black Individuals by Borough",
+       x = "Borough",
+       y = "Number of Shootings") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+```
+
+Brooklyn had the highest percentage of black victims (as shown by the heatmap
+and barchart), but the majority of people who live in Brooklyn are white.
+However, looking closer at the heatmap, most of the shootings in Brooklyn occurred
+in Canarsie and Crown Heights which has a predominantly black population.
+
+## Regression Analysis
+
+I'm curious as to whether black victims are targeted more than other races so
+I will perform a logistic regression analysis.
+
+```{r logistic_regression}
+# Create a binary target variable indicating 'BLACK' victims
+nypd$target_black <- ifelse(nypd$VIC_RACE == "BLACK", 1, 0)
+
+set.seed(123)  # Set a seed for reproducibility
+sample_index <- sample.int(nrow(nypd), size = 0.8 * nrow(nypd))  # 80% train, 20% test
+
+train_data <- nypd[sample_index, ]
+test_data <- nypd[-sample_index, ]
+
+# Build a logistic regression model
+model <- glm(target_black ~ BORO + PRECINCT + JURISDICTION_CODE + STATISTICAL_MURDER_FLAG + VIC_AGE_GROUP + VIC_SEX, 
+             data = train_data, 
+             family = "binomial")
+```
+
+```{r logistic_regression_results}
+# Predict using the test dataset
+predictions <- predict(model, newdata = test_data, type = "response")
+
+# Convert predicted probabilities to binary predictions
+threshold <- 0.5
+binary_predictions <- ifelse(predictions > threshold, 1, 0)
+
+# Evaluate model performance
+confusion_matrix <- table(test_data$target_black, binary_predictions)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+precision <- confusion_matrix[2, 2] / sum(confusion_matrix[, 2])
+recall <- confusion_matrix[2, 2] / sum(confusion_matrix[2, ])
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Display performance metrics
+print(confusion_matrix)
+print(paste("Accuracy:", round(accuracy, 4)))
+print(paste("Precision:", round(precision, 4)))
+print(paste("Recall:", round(recall, 4)))
+print(paste("F1 Score:", round(f1_score, 4)))
+```
+## Results
+As we can see by looking at the F1 score, the model performed with an accuracy
+over 82%.  We use F1 score since we can see from the confusion matrix there is
+a large difference between the number of false positives and false negatives. 
+This means that there is evidence that black victims are targeted more than 
+other races.  However, there are some caveats that must be addressed.  First, 
+this only includes New York City data, meaning that these results cannot and 
+should not be used to generalize about the entire US black population.  
+Secondly, the results may vary from neighborhood to neighborhood.  
+Lastly, black victims make up the majority of this dataset so it would only 
+make sense that the model would produce these results.
+
+## Bias Analysis
+Analyzing data related to shootings and race carries significant ethical 
+implications and potential biases that need to be carefully considered. 
+Here are some of the key ethical concerns and biases associated with 
+this type of analysis.
+1. Racial Bias:
+  If certain demographics are more likely to be targeted or involved in 
+  shootings, the model may exhibit demographic bias. For example, 
+  over-predicting incidents involving black individuals could be a form 
+  of demographic bias.
+2. Selection Bias:
+  The data collected by law enforcement agencies may not fully represent all
+  shooting incidents, as there could be underreporting or incomplete reporting,
+  which can introduce selection bias.
+3. Personal Bias:
+  As someone who believes that black individuals are targeted by police more
+  than white individuals, I chose not to compare the two races side by side
+  as I might inadvertently try to find a stronger correlation with black
+  shootings than white shootings.
+4. Temporal Bias:
+  Patterns in shootings may change over time, and historical data may not 
+  fully capture these shifts. Using outdated data may introduce temporal bias.
+  
+## Future Work
+If I were to come back to this project, something that I would like to do is to
+research more regression techniques. Since I am still relatively new to the 
+field of data science, there are only so many algorithms and regression 
+techniques that I am familiar with. As my experience in the field continues to 
+grow, my knowledge of machine learning algorithms will also continue to grow 
+and I can approach this problem with potentially better and more optimized 
+algorithms than the ones I chose for this project. I would also like to segment
+my data by borough or police precinct to see if I get different results. 
+I would also like to compare other US cities to my results from New York City. 
+Additionally, I would like to compare US data to data from other countries to 
+see what the US can do to better prevent gun violence.
